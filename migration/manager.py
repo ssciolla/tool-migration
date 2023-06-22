@@ -1,9 +1,13 @@
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+import sqlalchemy
+
 from api import API
 from data import Course, ExternalTool, ExternalToolTab
+from db import DB
 from utils import chunk_integer
 
 
@@ -11,8 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AccountManager:
+class AccountManagerBase(ABC):
     account_id: int
+
+    @abstractmethod
+    def get_courses_in_terms(self, term_ids: list[int], limit: int | None = None) -> list[Course]:
+        pass
+
+
+@dataclass(frozen=True)
+class AccountManager(AccountManagerBase):
     api: API
 
     def get_tools_installed_in_account(self) -> list[ExternalTool]:
@@ -44,6 +56,51 @@ class AccountManager:
             )
             for course_dict in results
         ]
+        logger.info(f'Number of courses found in account {self.account_id} for terms {term_ids}: {len(courses)}')
+        return courses
+
+
+@dataclass(frozen=True)
+class WarehouseAccountManager(AccountManagerBase):
+    db: DB
+
+    def get_courses_in_terms(self, term_ids: list[int], limit: int | None = None) -> list[Course]:
+        conn = self.db.get_connection()
+        statement = sqlalchemy.text(f'''
+            select c.canvas_id as "course_id",
+                c."name" as "course_name",
+                t.canvas_id as "term_id"
+            from course_dim c
+            left join enrollment_term_dim t
+                on c.enrollment_term_id=t.id
+            left join account_dim ra
+                on c.root_account_id=ra.id
+            left join account_dim a
+                on c.account_id=a.id
+            where t.canvas_id in :term_ids
+                and (a.canvas_id=:account_id or ra.canvas_id=:account_id)
+                and c.workflow_state != 'deleted'
+            {"limit :result_limit" if limit is not None else ''};
+        ''')
+        extra_bind_params = { "account_id": self.account_id }
+        if limit is not None:
+            extra_bind_params['result_limit'] = limit
+        statement = statement.bindparams(
+            sqlalchemy.bindparam("term_ids", value=term_ids, expanding=True),
+            **extra_bind_params
+        )
+        results = conn.execute(statement).all()
+
+        courses = []
+        course_dicts = []
+        for result in results:
+            result_dict = result._asdict()
+            course_dicts.append(result_dict)
+            courses.append(Course(
+                id=int(result_dict['course_id']),
+                name=result_dict['course_name'],
+                enrollment_term_id=int(result_dict['term_id'])
+            ))
         logger.info(f'Number of courses found in account {self.account_id} for terms {term_ids}: {len(courses)}')
         return courses
 

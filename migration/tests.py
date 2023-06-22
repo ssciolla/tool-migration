@@ -8,9 +8,10 @@ import httpx
 from dotenv import load_dotenv
 
 from data import Course, ExternalTool, ExternalToolTab, ToolMigration
+from db import DB, DBParams, Dialect
 from exceptions import ConfigException, InvalidToolIdsException
 from main import main, find_tools_for_migrations
-from manager import API, AccountManager, CourseManager
+from manager import API, AccountManager, CourseManager, WarehouseAccountManager
 from utils import convert_csv_to_int_list, find_entity_by_id, chunk_integer
 
 
@@ -140,7 +141,7 @@ class AccountManagerTestCase(unittest.TestCase):
     def test_manager_get_courses_in_multiple_terms(self):
         with self.api.client:
             manager = AccountManager(self.test_account_id, self.api)
-            courses = manager.get_courses_in_terms(self.enrollment_term_ids, 150)
+            courses = manager.get_courses_in_terms(self.enrollment_term_ids)
         self.assertTrue(len(courses) > 0)
         term_ids: list[int] = []
         for course in courses:
@@ -152,6 +153,58 @@ class AccountManagerTestCase(unittest.TestCase):
     def test_manager_get_courses_with_limit(self):
         with self.api.client:
             manager = AccountManager(self.test_account_id, self.api)
+            courses = manager.get_courses_in_terms(self.enrollment_term_ids, 50)
+        self.assertTrue(len(courses) > 0)
+        for course in courses:
+            self.assertTrue(isinstance(course, Course))
+        self.assertTrue(len(courses) <= 50)
+
+
+class WarehouseAccountManagerTestCase(unittest.TestCase):
+    """
+    Integration tests for WarehouseAccountManager class
+    """
+
+    def setUp(self) -> None:
+        wh_db_params: DBParams = {
+            "host": os.getenv('WH_HOST', ''),
+            "port": os.getenv('WH_PORT', ''),
+            "name": os.getenv('WH_NAME', ''),
+            "user": os.getenv('WH_USER', ''),
+            "password": os.getenv('WH_PASSWORD', '')
+        }
+
+        self.enrollment_term_ids: list[int] = convert_csv_to_int_list(os.getenv('ENROLLMENT_TERM_IDS', '0'))
+        self.db = DB(Dialect.POSTGRES, wh_db_params)
+        self.test_account_id = int(os.getenv('TEST_ACCOUNT_ID', 0))
+
+    def test_manager_get_courses_in_single_term(self):
+        with self.db:
+            manager = WarehouseAccountManager(account_id=self.test_account_id, db=self.db)
+            courses = manager.get_courses_in_terms([self.enrollment_term_ids[0]], 150)
+        self.assertTrue(len(courses) > 0)
+        term_ids: list[int] = []
+        for course in courses:
+            self.assertTrue(isinstance(course, Course))
+            term_ids.append(course.enrollment_term_id)
+        term_id_set = set(term_ids)
+        self.assertTrue(len(term_id_set) == 1)
+
+    def test_manager_get_courses_in_multiple_terms(self):
+        with self.db:
+            manager = WarehouseAccountManager(account_id=self.test_account_id, db=self.db)
+            courses = manager.get_courses_in_terms(self.enrollment_term_ids)
+        self.assertTrue(len(courses) > 0)
+        term_ids: list[int] = []
+        for course in courses:
+            self.assertTrue(isinstance(course, Course))
+            term_ids.append(course.enrollment_term_id)
+        term_id_set = set(term_ids)
+        self.assertTrue(len(term_id_set) > 1)
+
+    def test_manager_get_courses_with_limit(self):
+        with self.db:
+            manager = WarehouseAccountManager(self.test_account_id, self.db)
             courses = manager.get_courses_in_terms(self.enrollment_term_ids, 50)
         self.assertTrue(len(courses) > 0)
         for course in courses:
