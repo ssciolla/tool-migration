@@ -19,6 +19,10 @@ class AccountManagerBase(ABC):
     account_id: int
 
     @abstractmethod
+    def get_tools_installed_in_account(self) -> list[ExternalTool]:
+        pass
+
+    @abstractmethod
     def get_courses_in_terms(self, term_ids: list[int], limit: int | None = None) -> list[Course]:
         pass
 
@@ -63,8 +67,25 @@ class AccountManager(AccountManagerBase):
 @dataclass(frozen=True)
 class WarehouseAccountManager(AccountManagerBase):
     db: DB
+    api: API
+
+    def get_tools_installed_in_account(self) -> list[ExternalTool]:
+        params = {"include_parents": True}
+        results = self.api.get_results_from_pages(f'/accounts/{self.account_id}/external_tools', params)
+        tools = [ExternalTool(id=tool_dict['id'], name=tool_dict['name']) for tool_dict in results]
+        return tools
+
+    def get_subaccount_ids(self) -> list[int]:
+        results = self.api.get_results_from_pages(
+            f'/accounts/{self.account_id}/sub_accounts', { 'recursive': True }
+        )
+        sub_account_ids = [result['id'] for result in results]
+        logger.debug(sub_account_ids)
+        return sub_account_ids
 
     def get_courses_in_terms(self, term_ids: list[int], limit: int | None = None) -> list[Course]:
+        account_ids = [self.account_id] + self.get_subaccount_ids()
+
         conn = self.db.get_connection()
         statement = sqlalchemy.text(f'''
             select c.canvas_id as "course_id",
@@ -73,20 +94,19 @@ class WarehouseAccountManager(AccountManagerBase):
             from course_dim c
             left join enrollment_term_dim t
                 on c.enrollment_term_id=t.id
-            left join account_dim ra
-                on c.root_account_id=ra.id
             left join account_dim a
                 on c.account_id=a.id
             where t.canvas_id in :term_ids
-                and (a.canvas_id=:account_id or ra.canvas_id=:account_id)
+                and a.canvas_id in :account_ids
                 and c.workflow_state != 'deleted'
             {"limit :result_limit" if limit is not None else ''};
         ''')
-        extra_bind_params = { "account_id": self.account_id }
+        extra_bind_params = {}
         if limit is not None:
             extra_bind_params['result_limit'] = limit
         statement = statement.bindparams(
-            sqlalchemy.bindparam("term_ids", value=term_ids, expanding=True),
+            sqlalchemy.bindparam('term_ids', value=term_ids, expanding=True),
+            sqlalchemy.bindparam('account_ids', value=account_ids, expanding=True),
             **extra_bind_params
         )
         results = conn.execute(statement).all()
@@ -165,3 +185,12 @@ class CourseManager:
         new_source_tab = self.update_tool_tab(tab=source_tab, is_hidden=True)
         logger.info(f"Successfully replaced tool in course's navigation: {[new_source_tab, new_target_tab]}")
         return
+
+
+class AccountManagerFactory:
+
+    def get_manager(self, account_id: int, api: API, db: DB | None) -> AccountManagerBase:
+        if db is not None:
+            return WarehouseAccountManager(account_id, db, api)
+        else:
+            return AccountManager(account_id, api)

@@ -1,12 +1,14 @@
 import logging
 import os
+from contextlib import nullcontext
 
 from dotenv import load_dotenv
 
 from api import API
 from data import ExternalTool, ToolMigration
+from db import DB, Dialect
 from exceptions import InvalidToolIdsException
-from manager import AccountManager, CourseManager
+from manager import AccountManagerFactory, CourseManager
 from utils import convert_csv_to_int_list, find_entity_by_id
 
 
@@ -34,10 +36,12 @@ def find_tools_for_migrations(
     return tool_pairs
 
 
-def main(api: API, account_id: int, term_ids: list[int], migrations: list[ToolMigration]):
-    account_manager = AccountManager(account_id, api)
+def main(api: API, account_id: int, term_ids: list[int], migrations: list[ToolMigration], db: DB | None = None):
     
-    with api.client:
+    factory = AccountManagerFactory()
+    account_manager = factory.get_manager(account_id, api, db)
+
+    with api.client, db if db is not None else nullcontext():  # type: ignore
         tools = account_manager.get_tools_installed_in_account()
         tool_pairs = find_tools_for_migrations(tools, migrations)
 
@@ -84,6 +88,32 @@ if __name__ == '__main__':
     account_id: int = int(os.getenv('ACCOUNT_ID', '0'))
     enrollment_term_ids: list[int] = convert_csv_to_int_list(os.getenv('ENROLLMENT_TERM_IDS', '0'))
 
+    wh_host = os.getenv('WH_HOST')
+    wh_port = os.getenv('WH_PORT')
+    wh_name = os.getenv('WH_NAME')
+    wh_user = os.getenv('WH_USER')
+    wh_password = os.getenv('WH_PASSWORD')
+
+    db: DB | None = None
+    if (
+        wh_host is not None and
+        wh_port is not None and
+        wh_name is not None and
+        wh_user is not None and
+        wh_password is not None
+    ):
+        logger.info('Warehouse connection is configured, so it will be used for some data fetching...')
+        db = DB(
+            Dialect.POSTGRES,
+            {
+                'host': wh_host,
+                'port': wh_port,
+                'name': wh_name,
+                'user': wh_user,
+                'password': wh_password
+            }
+        )
+
     source_tool_id: int = int(os.getenv('SOURCE_TOOL_ID', '0'))
     target_tool_id: int = int(os.getenv('TARGET_TOOL_ID', '0'))
 
@@ -91,5 +121,6 @@ if __name__ == '__main__':
         API(api_url, api_key),
         account_id,
         enrollment_term_ids,
-        [ToolMigration(source_id=source_tool_id, target_id=target_tool_id)]
+        [ToolMigration(source_id=source_tool_id, target_id=target_tool_id)],
+        db
     )
