@@ -5,6 +5,7 @@ import re
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+from dataclasses import asdict
 
 import httpx
 from dotenv import load_dotenv
@@ -161,6 +162,17 @@ class AccountManagerTestCase(unittest.TestCase):
             self.assertTrue(isinstance(course, Course))
         self.assertTrue(len(courses) <= 50)
 
+    async def test_manager_create_course_csv(self):
+        async with self.api.client:
+            manager = AccountManager(self.test_account_id, self.api)
+            courses = await manager.get_courses_in_terms(self.enrollment_term_ids)
+        course_dicts = []
+        for course in courses:
+            self.assertTrue(isinstance(course, Course))
+            course_dicts.append(asdict(course))
+        with open(os.path.join('testing', 'api_courses.json'), 'w') as file:
+            file.write(json.dumps(course_dicts, indent=4))
+
 
 class WarehouseAccountManagerTestCase(unittest.TestCase):
     """
@@ -224,6 +236,18 @@ class WarehouseAccountManagerTestCase(unittest.TestCase):
         for course in courses:
             self.assertTrue(isinstance(course, Course))
         self.assertTrue(len(courses) <= 50)
+
+    async def test_manager_create_course_csv(self):
+        with self.db:
+            async with self.api.client:
+                manager = WarehouseAccountManager(account_id=self.test_account_id, db=self.db, api=self.api)
+                courses = await manager.get_courses_in_terms(self.enrollment_term_ids)
+        course_dicts = []
+        for course in courses:
+            self.assertTrue(isinstance(course, Course))
+            course_dicts.append(asdict(course))
+        with open(os.path.join('testing', 'wh_courses.json'), 'w') as file:
+            file.write(json.dumps(course_dicts, indent=4))
 
 
 class CourseManagerTestCase(unittest.TestCase):
